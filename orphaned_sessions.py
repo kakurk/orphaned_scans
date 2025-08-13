@@ -153,8 +153,8 @@ def send_email(message, start_date, end_date, recipient="kkurkela@bu.edu", csvfi
 def main():
 
     parser = argparse.ArgumentParser(description="Process XNAT session data.")
-    parser.add_argument("--start-date", required=True, help="Start date for session search.")
-    parser.add_argument("--end-date", required=True, help="End date for session search.")
+    parser.add_argument("--start-date", required=False, help='Start date (YYYY-MM-DD)')
+    parser.add_argument("--end-date", required=False, help='End date (YYYY-MM-DD)')
     args = parser.parse_args()
 
     # Default to last 7 days if not provided
