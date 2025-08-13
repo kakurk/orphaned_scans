@@ -1,2 +1,4 @@
 .venv
 .xnat_auth
+__pycache__
+orphaned_sessions.csv
