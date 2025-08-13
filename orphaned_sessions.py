@@ -1,8 +1,11 @@
 import os
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import configparser
+import subprocess
+import argparse
+import pdb
 
 # --- Configuration ---
 ARCHIVE_ROOT = "/data/xnat/archive"
@@ -76,7 +79,19 @@ def query_xnat_metadata(session, base_url, project_id, session_label):
         print(f"Error querying {url}: {e}")
         return None
 
-def find_sessions_and_metadata(auth):
+def query_sessions(start_date, end_date):
+    cmd = f'find /data/xnat/archive/*/arc001 -mindepth 1 -maxdepth 1 -type d -newermt {start_date} ! -newermt {end_date}'
+    result = subprocess.check_output(cmd, shell=True, universal_newlines=True)
+
+    dirs = result.strip().split('\n')
+
+    # if we do NOT find any directories, return an empty list
+    if dirs == ['']:
+        dirs = []
+
+    return dirs
+
+def find_sessions_and_metadata(auth, start_date, end_date):
     """
     Find sessions and collect last modified time and metadata.
     
@@ -88,52 +103,66 @@ def find_sessions_and_metadata(auth):
 
     # Create one persistent session with authentication
     with requests.Session() as req_session:
+
         req_session.auth = auth
 
-        projects = sorted(os.listdir(ARCHIVE_ROOT))
-        print(f"Found {len(projects)} projects in archive root.")
+        dirs = query_sessions(start_date, end_date)
 
-        for project in projects:
-            arc_path = os.path.join(ARCHIVE_ROOT, project, 'arc001')
+        for d in dirs:
 
-            if not os.path.isdir(arc_path):
-                continue
+            project = os.path.basename(os.path.dirname(os.path.dirname(d)))
+            session = os.path.basename(d)
+            last_modified = get_last_modified(d)
 
-            total_projects += 1
-            print(f"Processing project: {project}")
+            metadata_from_instances = []
+            for base_url in XNAT_INSTANCES:
+                meta = query_xnat_metadata(req_session, base_url, project, session)
+                metadata_from_instances.append(meta)
 
-            session_dirs = sorted(os.listdir(arc_path))
-            print(f"  Found {len(session_dirs)} sessions in project {project}.")
-
-            for session_dir in session_dirs:
-                session_path = os.path.join(arc_path, session_dir)
-                if not os.path.isdir(session_path):
-                    continue
-
-                total_sessions += 1
-                print(f"    Processing session {session_dir} (#{total_sessions})")
-
-                last_modified = get_last_modified(session_path)
-
-                metadata_from_instances = []
-                for base_url in XNAT_INSTANCES:
-                    meta = query_xnat_metadata(req_session, base_url, project, session_dir)
-                    metadata_from_instances.append(meta)
-
-                session_data.append({
-                    "project": project,
-                    "session": session_dir,
-                    "path": session_path,
-                    "last_modified": last_modified,
-                    "metadata_xnat2": metadata_from_instances[0],
-                    "metadata_xnat": metadata_from_instances[1]
-                })
-
-        print(f"Finished processing. Total projects: {total_projects}, total sessions: {total_sessions}.")
+            session_data.append({
+                "project": project,
+                "session": session,
+                "path": d,
+                "last_modified": last_modified,
+                "metadata_xnat2": bool(metadata_from_instances[0]),
+                "metadata_xnat": bool(metadata_from_instances[1])
+            })
 
     return session_data
 
+def send_email(message, start_date, end_date, recipient="kkurkela@bu.edu", csvfile=None):
+    """Send the report via system mail."""
+    subject = f"Weekly Orphaned Scan Report ({start_date} to {end_date})"
+    try:
+        if csvfile:
+            subprocess.run(
+                f'echo "{message}" | mailx -s "{subject}" -a "{csvfile}" {recipient}',
+                shell=True,
+                check=True
+            )
+        else:
+            subprocess.run(
+                f'echo "{message}" | mailx -s "{subject}" {recipient}',
+                shell=True,
+                check=True
+            )
+        print(f"Report emailed to {recipient}")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to send email: {e}")
+
 def main():
+
+    parser = argparse.ArgumentParser(description="Process XNAT session data.")
+    parser.add_argument("--start-date", required=True, help="Start date for session search.")
+    parser.add_argument("--end-date", required=True, help="End date for session search.")
+    args = parser.parse_args()
+
+    # Default to last 7 days if not provided
+    if not args.end_date:
+        args.end_date = datetime.today().strftime("%Y-%m-%d")
+    if not args.start_date:
+        args.start_date = (datetime.today() - timedelta(days=7)).strftime("%Y-%m-%d")
+
     try:
         username, password = read_xnat_auth()
         auth = (username, password)
@@ -141,18 +170,32 @@ def main():
         print(f"Error reading authentication credentials: {e}")
         return
 
-    data = find_sessions_and_metadata(auth)
+    data = find_sessions_and_metadata(auth, args.start_date, args.end_date)
     if not data:
-        print("No sessions found under archive root.")
+        message = f"No scans found on disk between {args.start_date} and {args.end_date}."
+        print(message)
+        send_email(message, args.start_date, args.end_date)
         return
 
     df = pd.DataFrame(data)
 
     try:
         df.to_csv(CSV_FILENAME, index=False)
-        print(f"Saved session metadata to {CSV_FILENAME}")
+        print(f"Saved session metadata to {CSV_FILENAME}")  
     except Exception as e:
         print(f"Error saving CSV file: {e}")
+
+    # how many orphans were found? Email an update
+    num_orphans = (df['metadata_xnat2'] == False).sum()
+
+    if num_orphans > 0:
+        message = f"{num_orphans} orphans found out of {len(df)} scans found on disk."
+        print(message)
+        send_email(message, args.start_date, args.end_date, csvfile=CSV_FILENAME)
+    else:
+        message = f"No orphans found out of {len(df)} scans on disk."
+        print(message)
+        send_email(message, args.start_date, args.end_date, csvfile=CSV_FILENAME)
 
 if __name__ == '__main__':
     main()
