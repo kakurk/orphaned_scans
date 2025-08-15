@@ -14,7 +14,7 @@ XNAT_INSTANCES = [
     "https://xnat.bu.edu"
 ]
 CSV_FILENAME = "orphaned_sessions.csv"
-AUTH_FILE = ".xnat_auth"
+AUTH_FILE = ".xnat_auth_alt"
 
 def read_xnat_auth(auth_file=AUTH_FILE):
     """
