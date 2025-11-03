@@ -2,3 +2,5 @@
 .xnat_auth
 __pycache__
 orphaned_sessions.csv
+.xnat_auth_alt
+cron.log
